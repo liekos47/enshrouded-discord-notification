@@ -1,0 +1,122 @@
+# enshrouded-discord
+
+[![Support me on Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20the%20mod-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/liekos47)
+
+Posts what happens on an Enshrouded dedicated server to Discord: server starting, online, offline,
+updates, players joining and leaving, player deaths with their cause and killer ("was killed by a Fell
+Thrall"), who went to sleep, and in-game chat. Also sends messages from Discord (or a schedule) into the game chat.
+
+Server-only: players install nothing.
+
+| Part | What |
+|---|---|
+| **Server mod** (`plugin/`, `dbghelp.dll`) | Loaded by `enshrouded_server.exe`. Player deaths (cause, position), sleep messages, one sleeper skips the night, in-game chat broadcast, chat to Discord, optional chest-refill notice and drop-factor tweaks |
+| **Log watcher** (`watcher/`) | Python, runs in Docker. Follows the server log and the mod's events file, posts to a Discord webhook. Never touches the game process |
+
+The watcher works alone too (start, online, offline, join, leave, updates); deaths, sleep and chat
+need the mod.
+
+**Supported game builds:** Enshrouded 1.0 (SVN 1267041) and hotfix 1.0.0.2 (SVN 1269579). On any
+other build the mod runs in safe mode (see [Build gate](#build-gate)).
+
+## Install
+
+### 1. Server mod
+
+1. Stop the server.
+2. Copy `dbghelp.dll` next to `enshrouded_server.exe`.
+3. **Linux / Proton / Wine only:** Wine uses its own dbghelp unless told otherwise. With the server
+   stopped, run
+   `python3 tools/wine_dbghelp_override.py <server>/.steam/steam/steamapps/compatdata/2278520/pfx/user.reg`
+   (adds `"dbghelp"="native,builtin"`; `--remove` undoes it).
+4. Start the server. `logs/deathwatch.log` must show `hooks in place: ...` and no `WARNING` or
+   `NOT installed` line. A `servermods.ini` with every setting is created on the first start.
+
+Remove: delete `dbghelp.dll` (and run the override tool with `--remove`), restart.
+
+### 2. Watcher
+
+1. Create a Discord webhook (channel settings, Integrations, Webhooks).
+2. Copy `watcher/` to the server host. Copy `config.example.json` to `config/config.json`, set
+   `webhook_url` and the server paths.
+3. Edit the volume paths in `docker-compose.yml`, then `docker compose up -d --build`.
+
+Without Docker: `python enshrouded_watch.py run -c config.json` (Python 3, no dependencies).
+
+## Mod settings: `servermods.ini`
+
+Next to `enshrouded_server.exe`, read once at server start. `key = value`; `;` starts a comment.
+
+| Key | Default | What it does |
+|---|---|---|
+| `death_messages` | true | player deaths (cause, position) to Discord |
+| `freezing_cause` | true | freezing deaths get their own cause |
+| `one_sleeper_skips_night` | true | one sleeping player skips the night |
+| `sleep_messages` | true | who went to sleep, to Discord |
+| `chat_to_discord` | true | player chat to Discord |
+| `chat_broadcast` | false | lines from `servermods/chat_outbox.txt` go to every player's chat (the watcher's `post --ingame` and `schedule` use it) |
+| `chat_type` | 4 | 4: shown like the game's join/leave notices; 0: shown as chat |
+| `chest_notice` | false | a player who opens a world chest is told when it refills; needs `chat_broadcast` |
+| `chest_notice_text` | `This chest refills about 30 minutes after everyone has left the area.` | the notice text |
+| `chest_notice_minutes` | 10 | at most one chest notice per player in this many minutes |
+| `consumable_drops` | false | changes gameplay: consumables follow the resource drop factor |
+| `harvest_drops` | false | changes gameplay: plant and bush harvests follow the resource drop factor |
+| `allow_unknown_build` | false | run every feature on a game build the mod was not checked against |
+
+### Build gate
+
+The mod knows the game builds it was checked against. On any other build (a new game update), the
+features that read game structures or call game functions turn off until the mod is updated: chat
+broadcast, chat to Discord, harvest drops, chest notice, death causes. Deaths then post without a
+cause, and Discord gets ":warning: mod running in safe mode". `allow_unknown_build = true` overrides it.
+
+## Killer names
+
+A death by a blow names what dealt it: ":skull: **Astrid** was killed by a Scavenger Crossbowman". The
+mod reports the killer's template guid; `watcher/killers.json` maps 1453 of them (enemies, their
+projectiles and explosions, traps) to a name. It is built from the server's game files by
+`plugin/tools/make_killers.py` (Python 3.14+), which reads each template's internal name
+(`Enemy_Fogger_Depleted_Spear`) and turns it into a readable one ("a Fell Thrall"). The dedicated server
+has no English game text, so the names are a reading of the internal ones and may differ from the game's
+wording. `"killers": {"<guid>": "a name"}` in the watcher config adds or overrides any of them; a killer
+that is not known posts as before ("was killed") and its guid is logged.
+
+After a game update that adds enemies:
+
+```
+python plugin/tools/make_killers.py <server folder> watcher/killers.json
+```
+
+## Watcher config
+
+`webhook_url` at top level or per server; per server also `log`, `manifest`, `events_log` and
+`chat_outbox`. `messages` overrides any message template (`{server}`, `{name}`, `{count}`,
+`{version}`, `{text}`; deaths also `{at}` and `{killer}`). `disabled_events` mutes events (`starting`,
+`updated`, `update`, `online`, `join`, `leave`, `offline`, `death`, `sleep`, `chat`, `notice`,
+`custom`). `schedule` entries: `{"at": "HH:MM", "days": ["Mon", ...], "text": ..., "server":
+optional, "ingame" / "ingame_only": optional}`, host local time.
+
+```
+python enshrouded_watch.py run   -c config.json             # the service
+python enshrouded_watch.py post  -c config.json "text"      # custom message (-s NAME: one server;
+                                                            #   --ingame / --ingame-only: game chat)
+python enshrouded_watch.py test  <logfile>                  # dry run: list events, post nothing
+```
+
+## Build from source
+
+```
+cd plugin
+cargo build --release          # target/release/dbghelp.dll (Windows, x64)
+cargo test --release           # SKIP_REFERENCE_EXE=1 skips tests that need the server exes
+python tools/check_signatures.py <enshrouded_server.exe>   # does this build fit the mod?
+```
+
+```
+cd watcher
+python -m unittest test_enshrouded_watch -v
+```
+
+## Support
+
+If this mod is useful on your server, you can support it on [Ko-fi](https://ko-fi.com/liekos47).

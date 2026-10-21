@@ -1,0 +1,16 @@
+# Put this file, Dockerfile, enshrouded_watch.py and config/config.json in one folder, then:
+#   docker compose up -d --build
+# Custom message:  docker compose exec watcher python /app/enshrouded_watch.py post "Hello"
+# Replace /path/to/server with your Enshrouded server folder (the one with enshrouded_server.exe).
+services:
+  watcher:
+    build: .
+    container_name: enshrouded-discord
+    restart: unless-stopped
+    volumes:
+      - /etc/localtime:/etc/localtime:ro   # "schedule" times are host time
+      - ./config:/config:ro
+      - ./state:/state                     # announced builds, last version per server
+      - /path/to/server/logs:/logs/server1:ro
+      - /path/to/server/steamapps:/steamapps/server1:ro
+      - /path/to/server/servermods:/outbox/server1   # rw: in-game chat outbox (chat_broadcast)

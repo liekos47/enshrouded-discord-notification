@@ -1,0 +1,27 @@
+[package]
+name = "deathwatch"
+version = "0.3.1"
+edition = "2024"
+
+# Built as dbghelp.dll: enshrouded_server.exe imports it, so Windows (and Wine with
+# WINEDLLOVERRIDES="dbghelp=native,builtin") loads this file from the server folder first.
+[lib]
+name = "dbghelp"
+crate-type = ["cdylib"]
+
+[dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+] }
+
+[profile.release]
+# Unwind, so a panic in the plugin is caught instead of aborting the game server.
+panic = "unwind"
+opt-level = 2

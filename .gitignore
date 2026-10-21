@@ -1,0 +1,6 @@
+plugin/target/
+reference/
+__pycache__/
+config/
+state/
+*.dll

@@ -1,0 +1,26 @@
+{
+  "webhook_url": "https://discord.com/api/webhooks/REPLACE/ME",
+  "username": "Enshrouded",
+  "poll_seconds": 1.0,
+  "silent_seconds": 120,
+  "disabled_events": [],
+  "servers": [
+    {
+      "name": "My Enshrouded Server",
+      "log": "/logs/server1/enshrouded_server.log",
+      "manifest": "/steamapps/server1/appmanifest_2278520.acf",
+      "events_log": "/logs/server1/deathwatch_events.log",
+      "chat_outbox": "/outbox/server1/chat_outbox.txt"
+    }
+  ],
+  "messages": {},
+  "schedule": [
+    {
+      "at": "02:25",
+      "days": ["Thu"],
+      "text": "Server restarts for updates in 5 minutes."
+    }
+  ],
+  "update_check_minutes": 10,
+  "state_file": "/state/state.json"
+}
