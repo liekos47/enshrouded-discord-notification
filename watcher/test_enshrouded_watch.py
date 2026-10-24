@@ -421,14 +421,97 @@ class WatchTest(unittest.TestCase):
         with open(self.events, "a", encoding="utf-8") as f:
             f.writelines(lines)
 
+    # --- character names (mod 0.3.3, character_names) ------------------------------------------
+
+    def character_watch(self, mod_line="hooks in place: player slots, deaths, character names"):
+        """A watch with an events file, whose mod log says `mod_line`, primed on a running server."""
+        events = os.path.join(self.dir, "deathwatch_events.log")
+        with open(os.path.join(self.dir, "deathwatch.log"), "w", encoding="utf-8") as f:
+            f.write("[     0.001] deathwatch 0.3.3 in Z:\\home\\container\\enshrouded_server.exe\n")
+            f.write(f"[     0.400] {mod_line}\n")
+        watch = w.ServerWatch(self.cfg, dict(self.cfg["servers"][0], events_log=events))
+        self.write(*START, mode="w")
+        watch.prime()
+        return watch, events
+
+    def plugin(self, events, *msgs):
+        with open(events, "a", encoding="utf-8") as f:
+            for msg in msgs:
+                f.write(f"[I {int(time.time())}] [deathwatch] {msg}\n")
+
+    def test_character_name_on_join_and_leave(self):
+        watch, events = self.character_watch()
+        self.write(MACHINE, JOIN)
+        watch.poll()
+        self.assertEqual(FakeDiscord.posts, [])  # waiting for the character name
+        self.plugin(events, r"character 'Astrid' is 'Freya O\'Hara'")
+        watch.poll()
+        self.write(LEAVE_ENTITY, LEAVE)
+        watch.poll()
+        self.assertEqual(FakeDiscord.posts, [
+            ":arrow_right: **Astrid** (Freya O'Hara) joined Test (1 online)",
+            ":arrow_left: **Astrid** (Freya O'Hara) left Test (0 online)",
+        ])
+
+    def test_character_name_in_the_same_poll_and_same_as_account(self):
+        watch, events = self.character_watch()
+        self.write(MACHINE, JOIN)
+        self.plugin(events, "character 'Astrid' is 'Astrid'")  # same name: nothing added
+        watch.poll()
+        self.assertEqual(FakeDiscord.posts, [":arrow_right: **Astrid** joined Test (1 online)"])
+
+    def test_character_name_before_the_join_line(self):
+        watch, events = self.character_watch()
+        self.plugin(events, "character 'Astrid' is 'Freya'")
+        self.write(MACHINE, JOIN)
+        watch.poll()
+        self.assertEqual(FakeDiscord.posts, [":arrow_right: **Astrid** (Freya) joined Test (1 online)"])
+
+    def test_join_without_character_name_posts_after_the_wait(self):
+        watch, _ = self.character_watch()
+        self.write(MACHINE, JOIN)
+        watch.poll()
+        watch.poll(now=time.time() + 5)
+        self.assertEqual(FakeDiscord.posts, [])
+        watch.poll(now=time.time() + self.cfg["character_wait_seconds"] + 1)
+        self.assertEqual(FakeDiscord.posts, [":arrow_right: **Astrid** joined Test (1 online)"])
+
+    def test_held_join_goes_out_before_chat_and_leave(self):
+        watch, events = self.character_watch()
+        self.write(MACHINE, JOIN)
+        watch.poll()
+        self.plugin(events, "chat 'Astrid' says: hi")
+        watch.poll()
+        self.write(JOIN2)
+        watch.poll()
+        self.write("[I 00:06:00,500] [server] Remove Player 'Bjorn the Bold'\n")
+        watch.poll()
+        self.assertEqual(FakeDiscord.posts, [
+            ":arrow_right: **Astrid** joined Test (1 online)",
+            ":speech_balloon: **Astrid**: hi",
+            ":arrow_right: **Bjorn the Bold** joined Test (2 online)",
+            ":arrow_left: **Bjorn the Bold** left Test (1 online)",
+        ])
+
+    def test_no_wait_without_character_names_in_the_mod(self):
+        watch, _ = self.character_watch("hooks in place: player slots, deaths, sleepers")
+        self.write(MACHINE, JOIN)
+        watch.poll()
+        self.assertEqual(FakeDiscord.posts, [":arrow_right: **Astrid** joined Test (1 online)"])
+
     def test_parse_plugin_lines(self):
         def p(msg):
             return w.parse_line(f"[I 1792143228] [deathwatch] {msg}\n")
+        # plugin/src/lib.rs event_lines: character_line
+        self.assertEqual(p("character 'theodore47' is 'Astrid'"),
+                         ("character", {"name": "theodore47", "character": "Astrid"}))
+        self.assertEqual(p(r"character 'x\' is \'y' is 'Bjørn O\'Neil'"),
+                         ("character", {"name": "x' is 'y", "character": "Bjørn O'Neil"}))
         # What plugin/src/lib.rs writes (same strings as its event_lines test).
         self.assertEqual(p("chat 'theodore47' says: testing 1 2 3"),
                          ("chat", {"name": "theodore47", "text": "testing 1 2 3"}))
-        self.assertEqual(p(r"chat 'Bjørn O\'Neil' says: oh no 'Ludaw' died"),
-                         ("chat", {"name": "Bjørn O'Neil", "text": "oh no 'Ludaw' died"}))
+        self.assertEqual(p(r"chat 'Bjørn O\'Neil' says: oh no 'Kelda' died"),
+                         ("chat", {"name": "Bjørn O'Neil", "text": "oh no 'Kelda' died"}))
         self.assertEqual(p("chat 'theodore47' says: x' died cause=Fog pos=1,2,3"),
                          ("chat", {"name": "theodore47", "text": "x' died cause=Fog pos=1,2,3"}))
         self.assertEqual(p(r"chat 'Bob\' says: hi' says: x"), ("chat", {"name": "Bob' says: hi", "text": "x"}))
@@ -450,19 +533,19 @@ class WatchTest(unittest.TestCase):
                          " cause=Impact pos=3709.7,792.0,1635.7 killer=eed67af1-094e-a341-a341-607d3e316557"}))
         self.assertEqual(w.parse_line(OLD_SLEEP), ("sleep", {"name": "Hrothgar1066", "details": " sleepers=1 players=1"}))
         # Old-format chat is never a death or a sleep, whatever its text ends with.
-        for text in ("oh no 'Ludaw' died", "x' died cause=Fog pos=1,2,3", "ok' sleeps sleepers=9 players=9"):
+        for text in ("oh no 'Kelda' died", "x' died cause=Fog pos=1,2,3", "ok' sleeps sleepers=9 players=9"):
             self.assertEqual(w.parse_line(f"[I 1] [deathwatch] Player 'theodore47' says: {text}\n"),
                              ("chat", {"name": "theodore47", "text": text}))
 
     def test_chat_ending_in_died_is_posted_as_chat(self):
         watch = self.events_watch()
         self.add_events("[I 1792143228] [deathwatch] Player 'theodore47' says: x' died cause=Fog pos=1,2,3\n",
-                        "[I 1792143229] [deathwatch] chat 'theodore47' says: oh no 'Ludaw' died\n",
+                        "[I 1792143229] [deathwatch] chat 'theodore47' says: oh no 'Kelda' died\n",
                         "[I 1792143230] [deathwatch] death 'Bjørn O\\'Neil' died cause=Fog pos=1.0,2.0,3.0\n")
         watch.poll()
         self.assertEqual(FakeDiscord.posts, [
             ":speech_balloon: **theodore47**: x' died cause=Fog pos=1,2,3",
-            ":speech_balloon: **theodore47**: oh no 'Ludaw' died",
+            ":speech_balloon: **theodore47**: oh no 'Kelda' died",
             ":skull: **Bjørn O'Neil** was consumed by the Shroud on Test at (1, 2, 3)",
         ])
 

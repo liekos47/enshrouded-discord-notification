@@ -350,7 +350,11 @@ mod tests {
     }
 
     /// A server build kept in the repo: (folder under reference/, PE timestamp, hook rva).
-    const BUILDS: [(&str, u32, usize); 2] = [("server-1267041", 0x6AD1_0810, 0x1A5658), ("server-1269579", 0x6AD2_025E, 0x1A5718)];
+    const BUILDS: [(&str, u32, usize); 3] = [
+        ("server-1267041", 0x6AD1_0810, 0x1A5658),
+        ("server-1269579", 0x6AD2_025E, 0x1A5718),
+        ("server-1273043", 0x6AD7_7F14, 0x1A65C8),
+    ];
 
     fn reference_path(dir: &str) -> Option<std::path::PathBuf> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../reference").join(dir).join("enshrouded_server.exe");

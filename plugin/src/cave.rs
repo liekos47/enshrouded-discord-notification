@@ -364,11 +364,13 @@ mod tests {
         chat_in: usize,
         freeze: usize,
     }
-    const SITES: [Sites; 2] = [
+    const SITES: [Sites; 3] = [
         // 1.0, SVN 1267041
         Sites { slots: 0x7b34a3, died: [0x72659, 0x8517e], record: 0x4df70, sleeper: 0x103ace, relay: 0x7aeed0, chat_in: 0x7b2cb1, freeze: 0xbc557 },
         // 1.0.0.2, SVN 1269579
         Sites { slots: 0x7b3583, died: [0x726a9, 0x851ce], record: 0x4dfc0, sleeper: 0x103b2e, relay: 0x7aefb0, chat_in: 0x7b2d91, freeze: 0xbc5b7 },
+        // 1.0.0.3, SVN 1273043
+        Sites { slots: 0x7b58c3, died: [0x73559, 0x8607e], record: 0x4ee70, sleeper: 0x1049de, relay: 0x7b12f0, chat_in: 0x7b50d1, freeze: 0xbd467 },
     ];
     const CHAT_IN_ORIGINAL: [u8; 8] = [0x89, 0x44, 0x24, 0x20, 0xC6, 0x45, 0x20, 0x00];
     const SLOTS_ORIGINAL: [u8; 7] = [0x49, 0x81, 0xC6, 0xE0, 0x01, 0x00, 0x00];

@@ -3,21 +3,22 @@
 [![Support me on Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20the%20mod-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/liekos47)
 
 Posts what happens on an Enshrouded dedicated server to Discord: server starting, online, offline,
-updates, players joining and leaving, player deaths with their cause and killer ("was killed by a Fell
-Thrall"), who went to sleep, and in-game chat. Also sends messages from Discord (or a schedule) into the game chat.
+updates, players joining and leaving with the character they play ("theodore47 (Astrid) joined"),
+player deaths with their cause and killer ("was killed by a Fell Thrall"), who went to sleep, and in-game
+chat. Also sends messages from Discord (or a schedule) into the game chat.
 
 Server-only: players install nothing.
 
 | Part | What |
 |---|---|
-| **Server mod** (`plugin/`, `dbghelp.dll`) | Loaded by `enshrouded_server.exe`. Player deaths (cause, position), sleep messages, one sleeper skips the night, in-game chat broadcast, chat to Discord, optional chest-refill notice and drop-factor tweaks |
+| **Server mod** (`plugin/`, `dbghelp.dll`) | Loaded by `enshrouded_server.exe`. Player deaths (cause, position), character names, sleep messages, one sleeper skips the night, in-game chat broadcast, chat to Discord, optional chest-refill notice and drop-factor tweaks |
 | **Log watcher** (`watcher/`) | Python, runs in Docker. Follows the server log and the mod's events file, posts to a Discord webhook. Never touches the game process |
 
-The watcher works alone too (start, online, offline, join, leave, updates); deaths, sleep and chat
-need the mod.
+The watcher works alone too (start, online, offline, join, leave, updates); deaths, sleep, chat and
+character names need the mod.
 
-**Supported game builds:** Enshrouded 1.0 (SVN 1267041) and hotfix 1.0.0.2 (SVN 1269579). On any
-other build the mod runs in safe mode (see [Build gate](#build-gate)).
+**Supported game builds:** Enshrouded 1.0 (SVN 1267041), 1.0.0.2 (SVN 1269579) and 1.0.0.3 (SVN 1273043).
+On any other build the mod runs in safe mode (see [Build gate](#build-gate)).
 
 ## Install
 
@@ -61,13 +62,14 @@ Next to `enshrouded_server.exe`, read once at server start. `key = value`; `;` s
 | `chest_notice_minutes` | 10 | at most one chest notice per player in this many minutes |
 | `consumable_drops` | false | changes gameplay: consumables follow the resource drop factor |
 | `harvest_drops` | false | changes gameplay: plant and bush harvests follow the resource drop factor |
+| `character_names` | true | each player's character name to Discord, next to their account name (reads memory only) |
 | `allow_unknown_build` | false | run every feature on a game build the mod was not checked against |
 
 ### Build gate
 
 The mod knows the game builds it was checked against. On any other build (a new game update), the
 features that read game structures or call game functions turn off until the mod is updated: chat
-broadcast, chat to Discord, harvest drops, chest notice, death causes. Deaths then post without a
+broadcast, chat to Discord, harvest drops, chest notice, death causes, character names. Deaths then post without a
 cause, and Discord gets ":warning: mod running in safe mode". `allow_unknown_build = true` overrides it.
 
 ## Killer names
@@ -87,11 +89,24 @@ After a game update that adds enemies:
 python plugin/tools/make_killers.py <server folder> watcher/killers.json
 ```
 
+## Character names
+
+The game log only names a player's account. The server keeps the character name too (its ban list uses
+it); the mod reads it from memory once per session, the way the server's own ban code looks it up, and
+writes `character '<account>' is '<character>'` to the events file. It hooks nothing and calls no game
+code, and every piece of game code it relies on is matched byte for byte at start: if a game update
+changes one, the feature turns itself off and joins post as before.
+
+The watcher holds a join post up to `character_wait_seconds` (20) for that line, only on a server whose
+mod lists "character names" in `hooks in place`. A chat, death or sleep of that player, or their leave,
+posts the join first. `{character}` in the join and leave templates is " (<name>)", or empty when the
+character has the account's name.
+
 ## Watcher config
 
 `webhook_url` at top level or per server; per server also `log`, `manifest`, `events_log` and
 `chat_outbox`. `messages` overrides any message template (`{server}`, `{name}`, `{count}`,
-`{version}`, `{text}`; deaths also `{at}` and `{killer}`). `disabled_events` mutes events (`starting`,
+`{version}`, `{text}`; joins and leaves also `{character}`; deaths also `{at}` and `{killer}`). `disabled_events` mutes events (`starting`,
 `updated`, `update`, `online`, `join`, `leave`, `offline`, `death`, `sleep`, `chat`, `notice`,
 `custom`). `schedule` entries: `{"at": "HH:MM", "days": ["Mon", ...], "text": ..., "server":
 optional, "ingame" / "ingame_only": optional}`, host local time.

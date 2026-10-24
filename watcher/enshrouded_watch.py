@@ -35,6 +35,7 @@ LINE = re.compile(r"^\[(?P<level>[A-Z]) (?P<uptime>[\d:,]+)\] (?P<msg>.*)$")
 
 # A name the plugin wrote in single quotes with \ and ' escaped (current plugin format).
 QUOTED_NAME = r"'(?P<qname>(?:[^'\\]|\\.)*)'"
+QUOTED_CHARACTER = r"'(?P<qcharacter>(?:[^'\\]|\\.)*)'"
 UNESCAPE = re.compile(r"\\(.)")
 
 PATTERNS = [
@@ -64,10 +65,12 @@ PATTERNS = [
     #   death '<name>' died cause=Impact pos=1.0,2.0,3.0 killer=<guid>   (key=value part optional)
     #   sleep '<name>' sleeps sleepers=1 players=3
     #   notice: <text>        (from the plugin itself, e.g. safe mode on an unknown server build)
+    #   character '<account name>' is '<character name>'   (0.3.3: once per player session)
     ("chat",     re.compile(r"^\[deathwatch\] chat " + QUOTED_NAME + r" says: (?P<text>.*)$")),
     ("death",    re.compile(r"^\[deathwatch\] death " + QUOTED_NAME + r" died(?P<details>(?: \w+=\S+)*)$")),
     ("sleep",    re.compile(r"^\[deathwatch\] sleep " + QUOTED_NAME + r" sleeps(?P<details>(?: \w+=\S+)*)$")),
     ("notice",   re.compile(r"^\[deathwatch\] notice:? (?P<text>.*)$")),
+    ("character", re.compile(r"^\[deathwatch\] character " + QUOTED_NAME + r" is " + QUOTED_CHARACTER + r"$")),
     # Older plugin builds (server 1 still runs one): "Player '<name>' died|sleeps|says: ...", name
     # not escaped. Chat is tried first: its text is typed by players and may end in "' died".
     ("chat",     re.compile(r"^\[deathwatch\] Player '(?P<name>.*?)' says: (?P<text>.*)$")),
@@ -84,6 +87,8 @@ def parse_message(msg):
             fields = hit.groupdict()
             if "qname" in fields:
                 fields["name"] = UNESCAPE.sub(r"\1", fields.pop("qname"))
+            if "qcharacter" in fields:
+                fields["character"] = UNESCAPE.sub(r"\1", fields.pop("qcharacter"))
             return event, fields
     return None
 
@@ -185,8 +190,10 @@ DEFAULT_MESSAGES = {
     "update":   ":arrow_up: Enshrouded update {latest} is available (installed: {version}). "
                 "**{server}** gets it on its next restart.",
     "online":   ":green_circle: **{server}** is online",
-    "join":     ":arrow_right: **{name}** joined {server} ({count} online)",
-    "leave":    ":arrow_left: **{name}** left {server} ({count} online)",
+    # {character} is " (<character name>)" when the server mod (0.3.3, character_names) wrote it
+    # and it differs from the account name, else empty.
+    "join":     ":arrow_right: **{name}**{character} joined {server} ({count} online)",
+    "leave":    ":arrow_left: **{name}**{character} left {server} ({count} online)",
     "shutdown": ":red_circle: **{server}** is shutting down",
     # Log quiet for silent_seconds, or a new run began before that: stopped, killed or crashed.
     "offline":  ":red_circle: **{server}** is offline",
@@ -234,6 +241,7 @@ def load_config(path):
     # Events posted unless listed in "disabled_events".
     cfg.setdefault("disabled_events", [])
     cfg.setdefault("schedule", [])
+    cfg.setdefault("character_wait_seconds", 20)  # a join waits this long for the character name
     cfg.setdefault("update_check_minutes", 10)   # 0 turns the Steam check off
     cfg.setdefault("state_file", None)           # remembers announced builds and last versions
     # killer guid (from deaths) -> readable name: killers.json next to this script (from the game
@@ -391,6 +399,9 @@ class ServerWatch:
         self.running = False     # from "starting" until "shutdown" or the log goes quiet
         self.missing_since = None  # when the log was first seen missing (None: present)
         self.events = EventsFile(server["events_log"]) if server.get("events_log") else None
+        self.mod_log = os.path.join(os.path.dirname(self.path), "deathwatch.log")
+        self.characters = {}     # account name -> character name, players of this run
+        self.held = {}           # account name -> (post by, count) of a join waiting for its character
 
     def _identity(self, st):
         # Not ctime: on Linux it changes on every write. A reused inode is still caught by
@@ -461,6 +472,7 @@ class ServerWatch:
         # tie the game-log line goes first.
         game = [(self.clock + t, False, event, fields) for t, event, fields in lines]
         self._post(heapq.merge(game, plugin, key=lambda item: item[0]))
+        self._release_due(now)
         if self.running and self._quiet(st, now):
             self._go_offline()
 
@@ -473,14 +485,37 @@ class ServerWatch:
                 if from_plugin:
                     self._post_plugin(event, fields)
                 else:
+                    # A held join goes out before that player's leave (without a character if
+                    # none came).
+                    if event == "leave" and fields.get("name") in self.held:
+                        self._release(fields["name"])
+                    elif event == "removed" and self.handles.get(fields.get("handle")) in self.held:
+                        self._release(self.handles[fields["handle"]])
                     out = self._apply(event, fields)
-                    if out:
+                    if out and out[0] == "join" and out[1]["name"] not in self.characters and self._wants_character():
+                        # Wait for the character name. One already known came in this session
+                        # (names are forgotten at each leave): the join posts with it below.
+                        self.held[out[1]["name"]] = (time.time() + self.cfg["character_wait_seconds"], len(self.players))
+                    elif out:
+                        if out[0] == "join":
+                            out = ("join", {**out[1], "character": self._character(out[1]["name"])})
+                        if out[0] == "leave":
+                            name = out[1]["name"]
+                            out = ("leave", {**out[1], "character": self._character(name)})
+                            self.characters.pop(name, None)
                         self._emit(*out)
             except Exception as e:
                 log(f"[{self.name}] cannot post {event} {fields}: {e!r}")
 
     def _post_plugin(self, event, fields):
         """Post one line of the plugin's events file (only its own kinds)."""
+        if event == "character":
+            self.characters[fields["name"]] = fields["character"]
+            if fields["name"] in self.held:
+                self._release(fields["name"])
+            return
+        if fields.get("name") in self.held:
+            self._release(fields["name"])  # the join first: chat, deaths and sleeps follow it
         if event == "death":
             event, fields = death_message(self.cfg, fields)
         elif event == "sleep":
@@ -489,6 +524,32 @@ class ServerWatch:
         elif event not in ("chat", "notice"):
             return
         self._emit(event, fields)
+
+    def _wants_character(self):
+        """The server mod of this run writes character names: its log's "hooks in place" line
+        names them. Read at each join (the line is near the start of the file)."""
+        if not self.events:
+            return False
+        try:
+            with open(self.mod_log, encoding="utf-8", errors="replace") as f:
+                head = f.read(65536)
+        except OSError:
+            return False
+        return any("hooks in place:" in line and "character names" in line for line in head.splitlines())
+
+    def _character(self, name):
+        """The known character name of `name` when it is not the account name, else ''."""
+        character = self.characters.get(name)
+        return character if character and character != name else ""
+
+    def _release(self, name):
+        """Post the held join of `name`, with its character name if it came."""
+        _, count = self.held.pop(name)
+        self._emit("join", {"name": name, "character": self._character(name), "count": count})
+
+    def _release_due(self, now):
+        for name in [n for n, (by, _) in self.held.items() if now >= by]:
+            self._release(name)
 
     def check_update(self):
         """Post once per new Steam build that this server does not have yet."""
@@ -510,6 +571,8 @@ class ServerWatch:
         self._clear_players()
 
     def _clear_players(self):
+        self.held.clear()        # a run that ended: its joins are not posted any more
+        self.characters.clear()
         self.players.clear()
         self.handles.clear()
         self.logins.clear()
@@ -602,9 +665,12 @@ class ServerWatch:
             return
         # Names and chat are typed by players: no markdown, mentions or extra lines in Discord.
         # Web addresses in chat stay as typed so they still link.
-        fields = {k: plain(v, links=k == "text") if k in ("name", "text") else v for k, v in fields.items()}
-        text = tmpl.format(server=self.name, count=len(self.players), **{
-            "name": "", "version": "?", "latest": "?", **fields})
+        fields = {k: plain(v, links=k == "text") if k in ("name", "text", "character") else v for k, v in fields.items()}
+        count = fields.pop("count", len(self.players))
+        if fields.get("character"):
+            fields["character"] = f" ({fields['character']})"
+        text = tmpl.format(server=self.name, count=count, **{
+            "name": "", "character": "", "version": "?", "latest": "?", **fields})
         log(f"[{self.name}] {event}: {text}")
         post_webhook(self.webhook, text, self.cfg["username"])
 

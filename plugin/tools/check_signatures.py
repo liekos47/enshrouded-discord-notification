@@ -128,6 +128,23 @@ def main(path):
                     with_store.append(rva)
     report("lib:SIG_DIED_EVENT (+store)", with_store, len(with_store) >= 1, f"of {len(events)} event sites")
 
+    # charname.rs: the ban handler's lookup, then each function it reaches must match at its call.
+    names = load_offsets("charname")
+    ban = find(sigs["charname:SIG_BAN"])
+    report("charname:SIG_BAN", ban, len(ban) == 1)
+    if len(ban) == 1:
+        def fits_at(rva, sig):
+            return rva is not None and rva in find(sig, rva, 1)
+        get = call_target(ban[0] + names["BAN_GET_CALL"])
+        name = call_target(ban[0] + names["BAN_NAME_CALL"])
+        type_map = call_target(get + names["GET_MAP_CALL"]) if get else None
+        record = call_target(get + names["GET_RECORD_CALL"]) if get else None
+        entity_map = call_target(record + names["RECORD_MAP_CALL"]) if record else None
+        chain = [("getComponent", get, "SIG_GET"), ("findCustomString", name, "SIG_FIND_STRING"),
+                 ("type map", type_map, "SIG_TYPE_MAP"), ("entity record", record, "SIG_RECORD"),
+                 ("entity map", entity_map, "SIG_ENTITY_MAP")]
+        for what, rva, sig in chain:
+            report(f"charname: {what}", [rva] if rva else [], fits_at(rva, sigs[f"charname:{sig}"]))
     relay = find(sigs["chat:SIG_RELAY"])
     if len(relay) == 1:
         for name in ("SIG_ALLOC", "SIG_HOLDER", "SIG_CHANNEL", "SIG_DESCRIPTOR", "SIG_SERIALIZE", "SIG_COMMIT", "SIG_DISCARD"):

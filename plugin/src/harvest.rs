@@ -674,11 +674,13 @@ mod tests {
         getter: usize,
         uses: [usize; 2],
     }
-    const BUILDS: [Build; 2] = [
+    const BUILDS: [Build; 3] = [
         // 1.0, SVN 1267041
         Build { dir: "server-1267041", timestamp: 0x6AD1_0810, hook: 0x19EFD3, getter: 0x9346D0, uses: [0x196688, 0x196AF9] },
         // 1.0.0.2 hotfix, SVN 1269579 (Steam build 25988414)
         Build { dir: "server-1269579", timestamp: 0x6AD2_025E, hook: 0x19F0E3, getter: 0x934DE0, uses: [0x196798, 0x196C09] },
+        // 1.0.0.3, SVN 1273043 (Steam build 26083076)
+        Build { dir: "server-1273043", timestamp: 0x6AD7_7F14, hook: 0x19FF93, getter: 0x937430, uses: [0x197648, 0x197AB9] },
     ];
 
     fn reference_path(dir: &str) -> Option<std::path::PathBuf> {

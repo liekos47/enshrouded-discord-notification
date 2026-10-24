@@ -23,6 +23,7 @@
 //! `servermods.ini` next to the exe (created with defaults on first start).
 
 mod cave;
+mod charname;
 mod chat;
 mod chest;
 mod deaths;
@@ -70,7 +71,7 @@ use crate::memory::{Image, matches, parse_signature, read, safe_read};
 /// with arguments we build (chat both ways, the PlayerDeath record copy, the freezing hook, the
 /// harvest hook) stay off unless `allow_unknown_build = true`. The rest only store a register or
 /// patch bytes after checking the original bytes, and stay on.
-const KNOWN_BUILDS: &[u32] = &[0x6ad1_0810, 0x6ad2_025e];
+const KNOWN_BUILDS: &[u32] = &[0x6ad1_0810, 0x6ad2_025e, 0x6ad7_7f14];
 
 /// `imul r14, r15, <stride>; mov [rsp+..], eax; add r14, <table offset>; add r14, rsi; mov ecx,[r14]`
 /// (1.0: the server object is rsi and the slot r14; 0.9 had them the other way round)
@@ -163,6 +164,8 @@ struct Hooks {
     chest_text: String,
     chest_type: u8,
     chest_every: Duration,
+    /// Character names are read from memory (charname.rs); None when off or not found.
+    names: Option<charname::Layout>,
 }
 
 impl Hooks {
@@ -177,6 +180,7 @@ impl Hooks {
             (self.chat_seen, "chat-to-Discord"),
             (self.chat, "chat broadcast"),
             (self.chest_page != 0, "chest notice"),
+            (self.names.is_some(), "character names"),
         ];
         parts.iter().filter(|(on, _)| *on).map(|(_, name)| *name).collect::<Vec<_>>().join(", ")
     }
@@ -479,7 +483,7 @@ fn decode_outbox(bytes: &[u8]) -> (String, bool) {
     }
 }
 const CONFIG_DEFAULT: &str = "\
-; Tartaros server mods (dbghelp.dll next to enshrouded_server.exe). Read once at server start.
+; Enshrouded server mods (dbghelp.dll next to enshrouded_server.exe). Read once at server start.
 ; Remove dbghelp.dll to turn everything off. Keys missing from this file are added at the next
 ; start, with the value in effect (anything that changes gameplay is off when its key is missing).
 
@@ -526,6 +530,10 @@ chest_notice_type = 4
 ; At most one chest notice per player in this many minutes (0: one for every chest).
 chest_notice_minutes = 10
 
+; Write each player's character name next to their account name to the events file, so the Discord
+; watcher can post: theodore47 (Astrid) joined. Only reads memory and changes nothing in the game.
+character_names = true
+
 ; On a server build this mod was not checked against (the server updates itself), only the parts
 ; that check the bytes they change run: death messages without a cause, sleep messages and the two
 ; patches. true runs everything anyway; only after plugin/tools/check_signatures.py passes on it.
@@ -534,7 +542,7 @@ allow_unknown_build = false
 
 /// Every key in file order, with the one-line comment written above it when it is added to an
 /// existing file.
-const CONFIG_KEYS: [(&str, &str); 15] = [
+const CONFIG_KEYS: [(&str, &str); 16] = [
     ("death_messages", "Write player deaths (cause, position) to logs/deathwatch_events.log for the Discord watcher."),
     ("freezing_cause", "Freezing deaths are written as cause=Freezing (hooks the body-heat drain)."),
     ("one_sleeper_skips_night", "One sleeping player is enough to skip the night at full speed."),
@@ -549,6 +557,7 @@ const CONFIG_KEYS: [(&str, &str); 15] = [
     ("chest_notice_text", "What the chest notice says (one line, no semicolons)."),
     ("chest_notice_type", "Type of the chest notice, like chat_type: 4 = shown like a join/leave notice, 0 = as chat."),
     ("chest_notice_minutes", "At most one chest notice per player in this many minutes (0: one for every chest)."),
+    ("character_names", "Write each player's character name to the events file, for the Discord watcher (reads memory only)."),
     ("allow_unknown_build", "true: chat, death causes and harvest drops run even on a server build this mod was not checked against."),
 ];
 
@@ -568,6 +577,7 @@ struct Config {
     chest_notice_text: String,
     chest_notice_type: u8,
     chest_notice_minutes: u32,
+    character_names: bool,
     allow_unknown_build: bool,
 }
 
@@ -589,6 +599,7 @@ impl Default for Config {
             chest_notice_text: CHEST_TEXT.to_string(),
             chest_notice_type: 4,
             chest_notice_minutes: 10,
+            character_names: true,
             allow_unknown_build: false,
         }
     }
@@ -687,6 +698,7 @@ impl Config {
             }
             "chest_notice_type" => self.chest_notice_type = value.parse().unwrap_or(Config::default().chest_notice_type),
             "chest_notice_minutes" => self.chest_notice_minutes = value.parse().unwrap_or(Config::default().chest_notice_minutes),
+            "character_names" => self.character_names = on,
             "allow_unknown_build" => self.allow_unknown_build = on,
             _ => {}
         }
@@ -709,6 +721,7 @@ impl Config {
             "chest_notice_text" => self.chest_notice_text.clone(),
             "chest_notice_type" => self.chest_notice_type.to_string(),
             "chest_notice_minutes" => self.chest_notice_minutes.to_string(),
+            "character_names" => self.character_names.to_string(),
             "allow_unknown_build" => self.allow_unknown_build.to_string(),
             _ => String::new(),
         }
@@ -1070,6 +1083,30 @@ fn install(image: &Image, config: &Config, trusted: bool) -> Result<Hooks, Strin
             }
         }
     };
+    // 10. Character names (charname.rs): nothing is written, the poll thread only reads.
+    let names = if !config.character_names {
+        None
+    } else if !trusted {
+        log("character names NOT installed: unknown server build");
+        None
+    } else {
+        match charname::resolve(image, slot_base + SLOT_ENTITY) {
+            Ok(layout) => {
+                log(&format!(
+                    "character names: ban lookup at exe+{:#x}; world at server+{:#x}, ECS registry at world+{:#x}, strings at server+{:#x}",
+                    image.rva(layout.site),
+                    layout.world,
+                    layout.ecs,
+                    layout.registry
+                ));
+                Some(layout)
+            }
+            Err(why) => {
+                log(&format!("character names NOT installed: {why}"));
+                None
+            }
+        }
+    };
     Ok(Hooks {
         page,
         slot_base,
@@ -1085,6 +1122,7 @@ fn install(image: &Image, config: &Config, trusted: bool) -> Result<Hooks, Strin
         chest_text: config.chest_notice_text.clone(),
         chest_type: config.chest_notice_type,
         chest_every: Duration::from_secs(60 * config.chest_notice_minutes as u64),
+        names,
     })
 }
 
@@ -1158,6 +1196,7 @@ fn poll_loop(hooks: &Hooks) {
     let mut chest_tail = if hooks.chest_page != 0 { chest::head(hooks.chest_page) } else { 0 };
     let mut chest_told: HashMap<u64, Instant> = HashMap::new(); // player (account, else slot handle) -> last notice
     let mut not_world_logged = 0u32;
+    let mut names: [NameState; PLAYER_SLOTS] = Default::default();
 
     loop {
         thread::sleep(POLL);
@@ -1186,6 +1225,9 @@ fn poll_loop(hooks: &Hooks) {
                 }
             }
             slots.scanned(now);
+            if let (Some(layout), Some(path)) = (hooks.names, events_path.as_ref()) {
+                name_players(hooks, &layout, &table, &mut names, path, now);
+            }
         }
 
         // Player deaths (EntityDiedEvent ids).
@@ -1477,6 +1519,67 @@ fn poll_loop(hooks: &Hooks) {
 }
 
 /// The whole player-slot table in one read (None before the server object is known, or unreadable).
+/// Character-name state of one player slot, for the player in it now (by handle and entity).
+#[derive(Default)]
+struct NameState {
+    handle: u32,
+    entity: u32,
+    /// Written, or given up.
+    done: bool,
+    tries: u32,
+    next: Option<Instant>,
+    last_error: &'static str,
+}
+
+/// Tries while the player's entity is being set up: every second for a minute, then every 15 s
+/// for 10 more minutes; then the join posts without a character name.
+const NAME_FAST_TRIES: u32 = 60;
+const NAME_TRIES: u32 = NAME_FAST_TRIES + 40;
+
+/// Writes `character '<account>' is '<character>'` once for each player who arrived in a slot.
+fn name_players(hooks: &Hooks, layout: &charname::Layout, table: &[u8], states: &mut [NameState; PLAYER_SLOTS], path: &PathBuf, now: Instant) {
+    let server = unsafe { ptr::read_volatile((hooks.page + cave::SERVER_SLOT) as *const usize) };
+    if server == 0 {
+        return;
+    }
+    for (i, state) in states.iter_mut().enumerate() {
+        let Some(slot) = table.get(i * hooks.slot_stride..(i + 1) * hooks.slot_stride) else { continue };
+        if !in_game(slot) {
+            *state = NameState::default();
+            continue;
+        }
+        let u32_at = |o: usize| u32::from_le_bytes(slot[o..o + 4].try_into().unwrap());
+        let (handle, entity) = (u32_at(SLOT_HANDLE), u32_at(SLOT_ENTITY));
+        if state.handle != handle || state.entity != entity {
+            *state = NameState { handle, entity, ..NameState::default() };
+        }
+        if state.done || state.next.is_some_and(|t| now < t) {
+            continue;
+        }
+        let account_name = slot_name(&slot[SLOT_NAME..SLOT_NAME_END]).unwrap_or_else(|| "A player".into());
+        match charname::read_name(&charname::Process, layout, server, entity) {
+            Ok(character) => {
+                write_line(path, &character_line(&account_name, &character));
+                log(&format!("character name of '{account_name}' (slot {i}, entity {entity:#x}): '{character}' after {} tries", state.tries + 1));
+                state.done = true;
+            }
+            Err(why) => {
+                state.tries += 1;
+                if why != state.last_error {
+                    log(&format!("character name of '{account_name}' (slot {i}, entity {entity:#x}) not read yet: {why}"));
+                    state.last_error = why;
+                }
+                if state.tries >= NAME_TRIES {
+                    log(&format!("character name of '{account_name}': gave up after {} tries ({why})", state.tries));
+                    state.done = true;
+                }
+                let wait = if state.tries < NAME_FAST_TRIES { Duration::from_secs(1) } else { Duration::from_secs(15) };
+                state.next = Some(now + wait);
+            }
+        }
+    }
+}
+
 fn slot_table(hooks: &Hooks) -> Option<Vec<u8>> {
     let server = unsafe { ptr::read_volatile((hooks.page + cave::SERVER_SLOT) as *const usize) };
     if server == 0 || hooks.slot_stride < deaths::SLOT_SCAN {
@@ -1544,6 +1647,11 @@ fn death_line(name: &str, suffix: &str) -> String {
 
 fn sleep_line(name: &str, sleepers: usize, players: usize) -> String {
     format!("sleep {} sleeps sleepers={sleepers} players={players}", quoted(name))
+}
+
+/// A player's character name: account name (as in the game log) first, then the character's.
+fn character_line(account_name: &str, character: &str) -> String {
+    format!("character {} is {}", quoted(account_name), quoted(character))
 }
 
 /// A message from the mod itself for the Discord channel (the watcher posts it as a warning).
@@ -1923,7 +2031,7 @@ mod tests {
         assert!(all.contains(" consumable_drops=false harvest_drops=false ") && all.contains(" chat_to_discord=true "));
         assert!(all.contains(" chat_sender=4294967295 chest_notice=false "));
         assert!(all.contains(&format!(" chest_notice_text=\"{CHEST_TEXT}\" chest_notice_type=4 chest_notice_minutes=10 ")));
-        assert!(all.ends_with(" chest_notice_minutes=10 allow_unknown_build=false"));
+        assert!(all.ends_with(" chest_notice_minutes=10 character_names=true allow_unknown_build=false"));
     }
 
     #[test]
@@ -2016,6 +2124,7 @@ mod tests {
     fn build_gate() {
         assert!(KNOWN_BUILDS.contains(&0x6ad1_0810)); // 1.0, SVN 1267041 (reference exe)
         assert!(KNOWN_BUILDS.contains(&0x6ad2_025e)); // 1.0.0.2, SVN 1269579
+        assert!(KNOWN_BUILDS.contains(&0x6ad7_7f14)); // 1.0.0.3, SVN 1273043
         // The events-file line start() writes on an unknown build (same format string).
         let notice = |timestamp: u32| notice_line(&format!("mod running in safe mode, unknown server build {:#010x}", timestamp));
         assert_eq!(notice(0x6ad1_0811), "notice: mod running in safe mode, unknown server build 0x6ad10811");
@@ -2042,7 +2151,7 @@ mod tests {
     fn event_lines() {
         // The watcher's test_parse_plugin_lines parses these same strings.
         assert_eq!(chat_line("theodore47", "testing 1 2 3"), "chat 'theodore47' says: testing 1 2 3");
-        assert_eq!(chat_line("Bjørn O'Neil", "oh no 'Ludaw' died"), r"chat 'Bjørn O\'Neil' says: oh no 'Ludaw' died");
+        assert_eq!(chat_line("Bjørn O'Neil", "oh no 'Kelda' died"), r"chat 'Bjørn O\'Neil' says: oh no 'Kelda' died");
         assert_eq!(chat_line("theodore47", "x' died cause=Fog pos=1,2,3"), "chat 'theodore47' says: x' died cause=Fog pos=1,2,3");
         assert_eq!(chat_line("Bob' says: hi", "x"), r"chat 'Bob\' says: hi' says: x");
         assert_eq!(chat_line("a", " two\r\nlines "), "chat 'a' says: two  lines");
@@ -2053,6 +2162,8 @@ mod tests {
         // The freezing pair's suffix (poll_loop); the watcher's test_plugin_death_causes posts it.
         assert_eq!(death_line("O'Hara", " cause=Freezing"), r"death 'O\'Hara' died cause=Freezing");
         assert_eq!(sleep_line("Hrothgar1066", 1, 1), "sleep 'Hrothgar1066' sleeps sleepers=1 players=1");
+        assert_eq!(character_line("theodore47", "Astrid"), "character 'theodore47' is 'Astrid'");
+        assert_eq!(character_line("x' is 'y", "Bjørn O'Neil"), r"character 'x\' is \'y' is 'Bjørn O\'Neil'");
         assert_eq!(
             notice_line(&format!("mod running in safe mode, unknown server build {:#010x}", 0x6ad1_0810u32)),
             "notice: mod running in safe mode, unknown server build 0x6ad10810"

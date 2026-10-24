@@ -28,7 +28,32 @@ struct Expect {
     drops_patch: usize,
     harvest_hook: usize,
     chest_hook: usize,
+    /// The ban handler's character-name lookup (charname::SIG_BAN).
+    names_site: usize,
 }
+
+const V1003: Expect = Expect {
+    path: "server-1273043",
+    timestamp: 0x6ad7_7f14,
+    slot_loop: 0x7b58b8,
+    died: [0x73559, 0x8607e],
+    record: 0x4ee70,
+    sleeper_hook: 0x1049de,
+    chat_in_hook: 0x7b50d1,
+    enqueue: 0x90b330,
+    relay: 0x7b12f0,
+    alloc: 0x9f8a60,
+    serialize: 0x99d330,
+    commit: 0x9efc80,
+    discard: 0x9f4aa0,
+    descriptor: 0x14a0860,
+    freeze_hook: 0xbd467,
+    sleep_patch: 0x104a19,
+    drops_patch: 0x168e9a,
+    harvest_hook: 0x19ff93,
+    chest_hook: 0x1a65c8,
+    names_site: 0x79e122,
+};
 
 const NEW: Expect = Expect {
     path: "server-1269579",
@@ -50,6 +75,7 @@ const NEW: Expect = Expect {
     drops_patch: 0x167fea,
     harvest_hook: 0x19f0e3,
     chest_hook: 0x1a5718,
+    names_site: 0x79bde2,
 };
 
 const OLD: Expect = Expect {
@@ -72,6 +98,7 @@ const OLD: Expect = Expect {
     drops_patch: 0x167f8a,
     harvest_hook: 0x19efd3,
     chest_hook: 0x1a5658,
+    names_site: 0x79bd02,
 };
 
 fn map(src: &str, tag: &str) -> Image {
@@ -180,7 +207,10 @@ fn run(e: &Expect, tag: &str) {
     let config = Config { chat_broadcast: true, chest_notice: true, ..Config::default() };
     let hooks = install(&image, &config, true).unwrap();
     writeln!(dump, "HOOKS {}", hooks.describe()).unwrap();
-    assert_eq!(hooks.describe(), "player slots, deaths, PlayerDeath record, freezing kills, sleepers, chat-to-Discord, chat broadcast, chest notice");
+    assert_eq!(hooks.describe(), "player slots, deaths, PlayerDeath record, freezing kills, sleepers, chat-to-Discord, chat broadcast, chest notice, character names");
+    let names = hooks.names.unwrap();
+    assert_eq!((image.rva(names.site), names.world, names.registry, names.ecs), (e.names_site, 0x1D0, 0x58, 0xE1_5DC0));
+    writeln!(dump, "NAMES site=exe+{:#x} world={:#x} registry={:#x} ecs={:#x}", image.rva(names.site), names.world, names.registry, names.ecs).unwrap();
     assert_eq!((hooks.chest_type, hooks.chest_every, hooks.chest_text.as_str()), (4, Duration::from_secs(600), CHEST_TEXT));
     assert_eq!((hooks.slot_base, hooks.slot_stride, hooks.sleeper_cell), (0x1E0, 0x148, 20));
     assert!(hooks.deaths && hooks.records && hooks.sleepers && hooks.chat && hooks.chat_seen && hooks.freeze_page != 0);
@@ -316,11 +346,11 @@ fn jmp_like_call(at: usize) -> usize {
 #[test]
 fn mapped_builds() {
     if let Ok(tag) = std::env::var("DW_MAP_BUILD") {
-        let e = [&OLD, &NEW].into_iter().find(|e| e.path.ends_with(&tag)).unwrap();
+        let e = [&OLD, &NEW, &V1003].into_iter().find(|e| e.path.ends_with(&tag)).unwrap();
         run(e, &tag);
         return;
     }
-    for e in [&OLD, &NEW] {
+    for e in [&OLD, &NEW, &V1003] {
         if !exe_path(e.path).exists() {
             assert!(std::env::var_os("SKIP_REFERENCE_EXE").is_some(), "{} missing", exe_path(e.path).display());
             eprintln!("SKIPPED: {} missing", exe_path(e.path).display());
