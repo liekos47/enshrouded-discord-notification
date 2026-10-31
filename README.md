@@ -11,7 +11,7 @@ Server-only: players install nothing.
 
 | Part | What |
 |---|---|
-| **Server mod** (`plugin/`, `dbghelp.dll`) | Loaded by `enshrouded_server.exe`. Player deaths (cause, position), character names, sleep messages, one sleeper skips the night, in-game chat broadcast, chat to Discord, optional chest-refill notice and drop-factor tweaks |
+| **Server mod** (`plugin/`, `dbghelp.dll`) | Loaded by `enshrouded_server.exe`. Player deaths (cause, position), character names, sleep messages, one sleeper skips the night, in-game chat broadcast, chat to Discord, optional chest notice and drop-factor tweaks |
 | **Log watcher** (`watcher/`) | Python, runs in Docker. Follows the server log and the mod's events file, posts to a Discord webhook. Never touches the game process |
 
 The watcher works alone too (start, online, offline, join, leave, updates); deaths, sleep, chat and
@@ -57,8 +57,9 @@ Next to `enshrouded_server.exe`, read once at server start. `key = value`; `;` s
 | `chat_to_discord` | true | player chat to Discord |
 | `chat_broadcast` | false | lines from `servermods/chat_outbox.txt` go to every player's chat (the watcher's `post --ingame` and `schedule` use it) |
 | `chat_type` | 4 | 4: shown like the game's join/leave notices; 0: shown as chat |
-| `chest_notice` | false | a player who opens a world chest is told when it refills; needs `chat_broadcast` |
-| `chest_notice_text` | `This chest refills about 30 minutes after everyone has left the area.` | the notice text |
+| `chest_notice` | false | a player who opens a world chest with fresh loot gets a private line in chat (see [Chest notice](#chest-notice)); needs `chat_broadcast` |
+| `chest_notice_text` | `This chest refills about 30 minutes after everyone has left the area.` | the notice text (one line); set your own, see [Chest notice](#chest-notice) |
+| `chest_notice_type` | 4 | like `chat_type`; any other value than 4 or 0 turns the chest notice off |
 | `chest_notice_minutes` | 10 | at most one chest notice per player in this many minutes |
 | `consumable_drops` | false | changes gameplay: consumables follow the resource drop factor |
 | `harvest_drops` | false | changes gameplay: plant and bush harvests follow the resource drop factor |
@@ -71,6 +72,25 @@ The mod knows the game builds it was checked against. On any other build (a new 
 features that read game structures or call game functions turn off until the mod is updated: chat
 broadcast, chat to Discord, harvest drops, chest notice, death causes, character names. Deaths then post without a
 cause, and Discord gets ":warning: mod running in safe mode". `allow_unknown_build = true` overrides it.
+
+## In-game chat lines
+
+Since game hotfix 1.0.0.2 the client shows a server chat line only when it carries the account of a
+player it knows. The mod sends every line (broadcasts and chest notices) to each player separately with
+that player's own account, so the lines show for everyone. Type 4 (the default) shows the text alone,
+like a join or leave notice; type 0 shows it as chat with the receiving player's name in front.
+
+## Chest notice
+
+With `chest_notice = true`, a player who opens a chest placed in the world and gets fresh loot from it
+receives `[Server] <chest_notice_text>` in chat, alone, at most once per `chest_notice_minutes`. Loot
+from enemies and other containers spawned at run time does not trigger it. It changes nothing in the
+game.
+
+About the default text: the server does reset an area 30 minutes after the last player has left it
+(that is where the 30 minutes come from). In testing (1.0.0.2), though, a looted chest still had not
+refilled after about 6 hours with nobody online. So the default text is probably wrong for chests; set
+`chest_notice_text` to whatever fits your server.
 
 ## Killer names
 
